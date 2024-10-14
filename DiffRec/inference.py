@@ -24,17 +24,23 @@ import data_utils
 from copy import deepcopy
 
 import random
+
 random_seed = 1
-torch.manual_seed(random_seed) # cpu
-torch.cuda.manual_seed(random_seed) # gpu
-np.random.seed(random_seed) # numpy
-random.seed(random_seed) # random and transforms
-torch.backends.cudnn.deterministic=True # cudnn
+torch.manual_seed(random_seed)  # cpu
+torch.cuda.manual_seed(random_seed)  # gpu
+np.random.seed(random_seed)  # numpy
+random.seed(random_seed)  # random and transforms
+torch.backends.cudnn.deterministic = True  # cudnn
+
+
 def worker_init_fn(worker_id):
     np.random.seed(random_seed + worker_id)
+
+
 def seed_worker(worker_id):
-    worker_seed = torch.initial_seed() % 2**32
+    worker_seed = torch.initial_seed() % 2 ** 32
     np.random.seed(worker_seed)
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default='yelp_clean', help='choose the dataset')
@@ -97,7 +103,7 @@ print("args:", args)
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 device = torch.device("cuda:0" if args.cuda else "cpu")
 
-print("Starting time: ", time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))
+print("Starting time: ", time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())))
 
 ### DATA LOAD ###
 train_path = args.data_path + 'train_list.npy'
@@ -106,9 +112,11 @@ test_path = args.data_path + 'test_list.npy'
 
 train_data, valid_y_data, test_y_data, n_user, n_item = data_utils.data_load(train_path, valid_path, test_path)
 train_dataset = data_utils.DataDiffusion(torch.FloatTensor(train_data.A))
-train_loader = DataLoader(train_dataset, batch_size=args.batch_size, pin_memory=True, shuffle=True, num_workers=4, worker_init_fn=worker_init_fn)
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, pin_memory=True, shuffle=True, num_workers=4,
+                          worker_init_fn=worker_init_fn)
 test_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False)
 
+# 验证集和训练集的组合
 if args.tst_w_val:
     tv_dataset = data_utils.DataDiffusion(torch.FloatTensor(train_data.A) + torch.FloatTensor(valid_y_data.A))
     test_twv_loader = DataLoader(tv_dataset, batch_size=args.batch_size, shuffle=False)
@@ -116,8 +124,7 @@ mask_tv = train_data + valid_y_data
 
 print('data ready.')
 
-
-### CREATE DIFFUISON ###
+### 创建扩散模型 ###
 if args.mean_type == 'x0':
     mean_type = gd.ModelMeanType.START_X
 elif args.mean_type == 'eps':
@@ -125,14 +132,15 @@ elif args.mean_type == 'eps':
 else:
     raise ValueError("Unimplemented mean type %s" % args.mean_type)
 
-diffusion = gd.GaussianDiffusion(mean_type, args.noise_schedule, \
-        args.noise_scale, args.noise_min, args.noise_max, args.steps, device)
+# 实例化高斯扩散模型
+diffusion = gd.GaussianDiffusion(mean_type, args.noise_schedule,
+                                 args.noise_scale, args.noise_min, args.noise_max, args.steps, device)
 diffusion.to(device)
 
 ### CREATE DNN ###
 model_path = "../checkpoints/DiffRec/"
 if args.dataset == "amazon-book_clean":
-    model_name = "amazon-book_clean_lr5e-05_wd0.0_bs400_dims[1000]_emb10_x0_steps5_scale0.0001_min0.0005_max0.005_sample0_reweight0_log.pth"  #The filename here contains a minor error. The actual hyperparameter 'reweight=1' is used during training.
+    model_name = "amazon-book_clean_lr5e-05_wd0.0_bs400_dims[1000]_emb10_x0_steps5_scale0.0001_min0.0005_max0.005_sample0_reweight0_log.pth"  # The filename here contains a minor error. The actual hyperparameter 'reweight=1' is used during training.
 elif args.dataset == "yelp_clean":
     model_name = "yelp_clean_lr1e-05_wd0.0_bs400_dims[1000]_emb10_x0_steps5_scale0.01_min0.001_max0.01_sample0_reweight0_log.pth"  # The filename here contains a minor error. The actual hyperparameter 'reweight=1' is used during training.
 elif args.dataset == "ml-1m_clean":
@@ -144,10 +152,10 @@ elif args.dataset == "yelp_noisy":
 elif args.dataset == "ml-1m_noisy":
     model_name = "ml-1m_noisy_lr0.001_wd0.0_bs400_dims[200,600]_emb10_x0_steps5_scale0.5_min0.001_max0.01_sample0_reweight0_log.pth"
 
-
 model = torch.load(model_path + model_name).to(device)
 
 print("models ready.")
+
 
 def evaluate(data_loader, data_te, mask_his, topN):
     model.eval()
@@ -158,21 +166,25 @@ def evaluate(data_loader, data_te, mask_his, topN):
     target_items = []
     for i in range(e_N):
         target_items.append(data_te[i, :].nonzero()[1].tolist())
-    
+
     with torch.no_grad():
         for batch_idx, batch in enumerate(data_loader):
-            his_data = mask_his[e_idxlist[batch_idx*args.batch_size:batch_idx*args.batch_size+len(batch)]]
+            his_data = mask_his[e_idxlist[batch_idx * args.batch_size:batch_idx * args.batch_size + len(batch)]]
             batch = batch.to(device)
+            # 通过扩散模型生成推荐
             prediction = diffusion.p_sample(model, batch, args.sampling_steps, args.sampling_noise)
-            prediction[his_data.nonzero()] = -np.inf
+            prediction[his_data.nonzero()] = -np.inf  # 避免推荐历史中的物品
 
+            # 获取TopN推荐
             _, indices = torch.topk(prediction, topN[-1])
             indices = indices.cpu().numpy().tolist()
             predict_items.extend(indices)
 
+    # 计算推荐精度
     test_results = evaluate_utils.computeTopNAccuracy(target_items, predict_items, topN)
 
     return test_results
+
 
 valid_results = evaluate(test_loader, valid_y_data, train_data, eval(args.topN))
 if args.tst_w_val:
@@ -180,9 +192,3 @@ if args.tst_w_val:
 else:
     test_results = evaluate(test_loader, test_y_data, mask_tv, eval(args.topN))
 evaluate_utils.print_results(None, valid_results, test_results)
-
-
-
-
-
-
